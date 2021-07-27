@@ -12,9 +12,10 @@ from networks.flownet.submodules import *
 'Parameter count = 162,518,834'
 
 class FlowNet2SD(FlowNetSD):
-    def __init__(self, args, batchNorm=False, div_flow=20):
-        super(FlowNet2SD,self).__init__(args, batchNorm=batchNorm)
-        self.rgb_max = args.rgb_max
+    def __init__(self, rgb_max=255., batchNorm=False, div_flow=20, training=False):
+        super(FlowNet2SD,self).__init__(batchNorm=batchNorm)
+        self.training=training
+        self.rgb_max = rgb_max
         self.div_flow = div_flow
 
     def forward(self, inputs):
@@ -34,7 +35,7 @@ class FlowNet2SD(FlowNetSD):
         flow6       = self.predict_flow6(out_conv6)
         flow6_up    = self.upsampled_flow6_to_5(flow6)
         out_deconv5 = self.deconv5(out_conv6)
-        
+
         concat5 = torch.cat((out_conv5,out_deconv5,flow6_up),1)
         out_interconv5 = self.inter_conv5(concat5)
         flow5       = self.predict_flow5(out_interconv5)

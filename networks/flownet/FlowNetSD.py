@@ -9,7 +9,7 @@ from networks.flownet.submodules import *
 'Parameter count = 45,371,666'
 
 class FlowNetSD(nn.Module):
-    def __init__(self, args, batchNorm=True):
+    def __init__(self, batchNorm=True):
         super(FlowNetSD,self).__init__()
 
         self.batchNorm = batchNorm
@@ -59,7 +59,7 @@ class FlowNetSD(nn.Module):
                     init.uniform_(m.bias)
                 init.xavier_uniform_(m.weight)
                 # init_deconv_bilinear(m.weight)
-        self.upsample1 = nn.Upsample(scale_factor=4, mode='bilinear')
+        self.upsample1 = nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)
 
 
 

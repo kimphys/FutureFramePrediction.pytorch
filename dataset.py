@@ -44,10 +44,9 @@ class SequenceDataset(Dataset):
                 frames = [cv2.imread(frame, cv2.IMREAD_COLOR).astype(np.float32) for frame in frames]
                     
             frames = [self.simple_transform(frame, self.size) for frame in frames]
-    
+
             frames = torch.stack(frames)
             frames = torch.reshape(frames, (-1, self.size, self.size))
-
             clips.append(frames)
 
         return clips
