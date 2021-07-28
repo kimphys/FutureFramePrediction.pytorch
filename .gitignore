@@ -131,4 +131,6 @@ dmypy.json
 # etc
 weights/
 pretrained/
+logs/
+datasets/
 

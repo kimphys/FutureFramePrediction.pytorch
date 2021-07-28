@@ -3,7 +3,6 @@ import sys
 
 from torch.utils.data import DataLoader
 
-from utils import *
 from loss import *
 from dataset import SequenceDataset
 from networks.unet.unet import UNet
@@ -12,16 +11,19 @@ from networks.discriminator.models import PixelDiscriminator
 
 from tqdm import tqdm
 
+import cv2
+
+from time import time
+
 class args():
     
     # training args
     epochs = 600 # "number of training epochs, default is 2"
     save_per_epoch = 5
-    batch_size = 6 # "batch size for training/testing, default is 4"
+    batch_size = 4 # "batch size for training/testing, default is 4"
     pretrained = False
-    lr_init = 1e-4
-    lr_weight_decay = 1e-5
     save_model_dir = "./weights/" #"path to folder where trained model with checkpoints will be saved."
+    save_logs_dir = "./logs/"
     num_workers = 0
     resume = False
 
@@ -37,13 +39,29 @@ class args():
     # Dataset setting
     channels = 3
     size = 256
-    videos_dir = 'D:\\project\\anomalydetection\\UCSD_Anomaly_Dataset\\UCSD_Anomaly_Dataset.v1p2\\UCSDped1\\Train\\210716\\'
-    time_steps = 10
+    videos_dir = 'datasets/train'
+    time_steps = 5
 
     # For GPU training
     gpu = 0 # None
 
+def check_cuda():
+    if torch.cuda.is_available() and args.gpu is not None:
+        return True
+    else:
+        return False
+
+def weights_init_normal(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        torch.nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm2d') != -1:
+        torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
+        torch.nn.init.constant_(m.bias.data, 0.0)
+
 def train():
+
+    use_cuda = check_cuda()
     
     generator = UNet(in_channels=args.channels * (args.time_steps - 1), out_channels=args.channels)
     discriminator = PixelDiscriminator(input_nc=args.channels)
@@ -66,34 +84,40 @@ def train():
         optimizer_G.load_state_dict(torch.load(args.resume)['optimizer_G'])
         optimizer_D.load_state_dict(torch.load(args.resume)['optimizer_D'])
         print(f'Pre-trained generator and discriminator have been loaded.\n')
+    else:
+        generator.apply(weights_init_normal)
+        discriminator.apply(weights_init_normal)
+        print('Generator and discriminator are going to be trained from scratch.')
 
-    if torch.cuda.is_available() and args.gpu is not None:
-        use_cuda = True
+    if use_cuda:
         torch.cuda.set_device(args.gpu)
 
         generator = generator.cuda()
         discriminator = discriminator.cuda()
         opticalflow = opticalflow.cuda()
+
     else:
-        use_cuda = False
         print('using CPU, this will be slow')
 
     trainloader = DataLoader(dataset=SequenceDataset(channels=args.channels, size=args.size, videos_dir=args.videos_dir, time_steps=args.time_steps), batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
+    generator.train()
+    discriminator.train()
+    opticalflow.eval()
+
     with torch.set_grad_enabled(True):
         for ep in range(args.epochs):
-            pbar = tqdm(trainloader)
 
             g_loss_sum = 0
             d_loss_sum = 0
 
-            for i, clips in enumerate(pbar):
-                for frames in clips:
-                    generator.train()
-                    discriminator.train()
-                    inputs = frames[:, :args.channels * (args.time_steps - 1), :, :]
+            for i, clips in enumerate(trainloader):
+                pbar = tqdm(clips)
+                for j, frames in enumerate(pbar):
+                    
+                    inputs = frames[:, 0:args.channels * (args.time_steps - 1), :, :]
                     last = frames[:, args.channels * (args.time_steps - 2):args.channels * (args.time_steps - 1), :, :]
-                    target = frames[:, args.channels * (args.time_steps - 1):, :, :]
+                    target = frames[:, args.channels * (args.time_steps - 1):args.channels * args.time_steps, :, :]
                     
                     if use_cuda:
                         inputs = inputs.cuda()
@@ -109,8 +133,10 @@ def train():
                     flow_pred = (opticalflow(pred_flow_input * 255.) / 255.).detach()
 
                     d_t = discriminator(target)
-                    d_g = discriminator(generated.detach())
+                    d_g = discriminator(generated)
+                    d_gg = discriminator(generated.detach())
 
+                    
                     if use_cuda:
                         generated = generated.cpu()
                         target = target.cpu()
@@ -118,33 +144,61 @@ def train():
                         flow_gt = flow_gt.cpu()
                         d_t = d_t.cpu()
                         d_g = d_g.cpu()
+                        d_gg = d_gg.cpu()
+                    
 
-                    g_loss = intensity_loss(generated, target) + \
-                                gradient_loss(generated, target) + \
-                                2 * flow_loss(flow_pred, flow_gt) + \
-                                0.05 * adversarial_loss(d_g)
+                    int_loss = intensity_loss(generated, target)
+                    grad_loss = gradient_loss(generated, target)
+                    f_loss = flow_loss(flow_pred, flow_gt)
+                    adv_loss = adversarial_loss(d_g)
 
-                    d_loss = discriminator_loss(d_t, d_g)
+                    g_loss = int_loss + \
+                                grad_loss + \
+                                2 * f_loss + \
+                                0.05 * adv_loss
 
-                    d_loss.backward(retain_graph=True)
-                    g_loss.backward(retain_graph=True)
+                    d_loss = discriminator_loss(d_t, d_gg)
 
                     optimizer_D.zero_grad()
+                    d_loss.backward()
                     optimizer_G.zero_grad()
+                    g_loss.backward()
                     optimizer_D.step()
                     optimizer_G.step()
+
+                    if use_cuda:
+                        torch.cuda.synchronize()
 
                     d_loss_sum += d_loss.item()
                     g_loss_sum += g_loss.item()
 
-            g_loss_mean = g_loss_sum / (len(clips) * len(pbar))
-            d_loss_mean = d_loss_sum / (len(clips) * len(pbar))
+                    if j == 0:
+                        diff_map = torch.sum(torch.abs(generated - target)[0], 0)
+                        diff_map -= diff_map.min()  # Normalize to 0 ~ 255.
+                        diff_map /= diff_map.max()
+                        diff_map *= 255
+                        diff_map = diff_map.detach().numpy().astype('uint8')
+                        heat_map = cv2.applyColorMap(diff_map, cv2.COLORMAP_JET)
+                        cv2.imwrite(os.path.join(args.save_logs_dir, f'{ep}_{i}_{time()}.jpg'), heat_map)
+                    
+                    pbar.set_postfix(_1_Epoch=f'{ep+1}/{args.epochs}',
+                                     _2_int_loss=f'{int_loss:.5f}',
+                                     _3_grad_loss=f'{grad_loss:.5f}',
+                                     _4_f_loss=f'{f_loss:.5f}', 
+                                     _5_adv_loss=f'{adv_loss:.5f}',
+                                     _6_gen_loss=f'{g_loss.item():.5f}',
+                                     _7_dis_loss=f'{d_loss.item():.5f}', 
+                                      
+                                     )
+
+            g_loss_mean = g_loss_sum / (len(clips) * len(trainloader))
+            d_loss_mean = d_loss_sum / (len(clips) * len(trainloader))
             print('G Loss: ', g_loss_mean)
             print('D Loss: ', d_loss_mean)
 
             if (ep + 1) % args.save_per_epoch == 0:
                 model_dict = {'generator': generator.state_dict(), 'optimizer_G': optimizer_G.state_dict(),
-                            'discriminator': discriminator.state_dict(), 'optimizer_D': optimizer_D.state_dict()}
+                              'discriminator': discriminator.state_dict(), 'optimizer_D': optimizer_D.state_dict()}
                 torch.save(model_dict, os.path.join(args.save_model_dir, f'ckpt_{ep + 1}_{g_loss_mean}_{d_loss_mean}.pth'))
 
         
