@@ -48,7 +48,7 @@ python train.py
 ```
 python demo.py
 ```
-* Then, you can get regularity scores at each frame.
+* Then, you can get GIF files(results/heatmap.gif) for anomalies.
 
 ## To-do list
 - [ ] Add evaluation codes
