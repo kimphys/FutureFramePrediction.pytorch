@@ -83,11 +83,11 @@ def train():
         discriminator.load_state_dict(torch.load(args.resume)['discriminator'])
         optimizer_G.load_state_dict(torch.load(args.resume)['optimizer_G'])
         optimizer_D.load_state_dict(torch.load(args.resume)['optimizer_D'])
-        print(f'Pre-trained generator and discriminator have been loaded.\n')
+        print(f'Pretrained models have been loaded.\n')
     else:
         generator.apply(weights_init_normal)
         discriminator.apply(weights_init_normal)
-        print('Generator and discriminator are going to be trained from scratch.')
+        print('Learning from scratch.')
 
     if use_cuda:
         torch.cuda.set_device(args.gpu)
@@ -97,7 +97,7 @@ def train():
         opticalflow = opticalflow.cuda()
 
     else:
-        print('using CPU, this will be slow')
+        print('Using CPU, this will be slow')
 
     trainloader = DataLoader(dataset=SequenceDataset(channels=args.channels, size=args.size, videos_dir=args.videos_dir, time_steps=args.time_steps), batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
@@ -134,7 +134,6 @@ def train():
 
                     d_t = discriminator(target)
                     d_g = discriminator(generated)
-                    d_gg = discriminator(generated.detach())
 
                     
                     if use_cuda:
@@ -144,7 +143,6 @@ def train():
                         flow_gt = flow_gt.cpu()
                         d_t = d_t.cpu()
                         d_g = d_g.cpu()
-                        d_gg = d_gg.cpu()
                     
 
                     int_loss = intensity_loss(generated, target)
@@ -157,9 +155,9 @@ def train():
                                 2 * f_loss + \
                                 0.05 * adv_loss
 
-                    d_loss = discriminator_loss(d_t, d_gg)
+                    d_loss = discriminator_loss(d_t, d_g)
 
-                    optimizer_D.zero_grad()
+                    optimizer_D.zero_grad(retain_graph=True)
                     d_loss.backward()
                     optimizer_G.zero_grad()
                     g_loss.backward()
@@ -174,7 +172,7 @@ def train():
 
                     if j == 0:
                         diff_map = torch.sum(torch.abs(generated - target)[0], 0)
-                        diff_map -= diff_map.min()  # Normalize to 0 ~ 255.
+                        diff_map -= diff_map.min()
                         diff_map /= diff_map.max()
                         diff_map *= 255
                         diff_map = diff_map.detach().numpy().astype('uint8')
@@ -187,8 +185,7 @@ def train():
                                      _4_f_loss=f'{f_loss:.5f}', 
                                      _5_adv_loss=f'{adv_loss:.5f}',
                                      _6_gen_loss=f'{g_loss.item():.5f}',
-                                     _7_dis_loss=f'{d_loss.item():.5f}', 
-                                      
+                                     _7_dis_loss=f'{d_loss.item():.5f}'
                                      )
 
             g_loss_mean = g_loss_sum / (len(clips) * len(trainloader))
